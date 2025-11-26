@@ -1,279 +1,199 @@
-// server.js
+// server.js — Samurai Selfie Server
+// ========================================================
+//  Node + Express server to manage:
+//  - Start selfie session
+//  - Deliver selfie URL (token-based)
+//  - Receive Liveness result
+//  - Poll status from origin page
+// ========================================================
 
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const crypto = require('crypto');
+import express from "express";
+import cors from "cors";
+import crypto from "crypto";
 
 const app = express();
-const PORT = process.env.PORT || 10000;
-
-// مثال: https://samurai-selfi.onrender.com
-const SELFIE_BASE_URL =
-  process.env.SAMURAI_SELFIE_BASE_URL || 'https://samurai-selfi.onrender.com';
-
-// اختياري: إلا بغيتي تحمي API بمفتاح بسيط
-const API_KEY = process.env.SAMURAI_API_KEY || '';
-
+app.use(express.json({ limit: "2mb" }));
 app.use(cors());
-app.use(express.json());
 
-// تخزين مؤقت للتوكنات (للتجارب فقط – فالإنتاج استعمل DB)
-const tokens = new Map();
+const PORT = process.env.PORT || 3000;
 
-/**
- * POST /api/samurai/selfie-link
- * body: {
- *   user_id,
- *   transaction_id,
- *   appointment_data?,
- *   liveness_data?,
- *   return_url?,
- *   request_verification_token?
- * }
- * → يرجع: { ok, selfie_url, meta }
- */
-app.post('/api/samurai/selfie-link', (req, res) => {
-  // حماية بسيطة بالمفتاح (اختيارية)
-  if (API_KEY) {
-    const clientKey = req.headers['x-samurai-key'];
-    if (!clientKey || clientKey !== API_KEY) {
-      return res.status(401).json({ error: 'unauthorized' });
+// ========================================================
+// TOKEN STORAGE (In-Memory)
+// ========================================================
+/*
+  Schema:
+  tokens = {
+    token123: {
+      createdAt: 123456,
+      status: 'pending' | 'done',
+      meta: {
+        user_id,
+        transaction_id,
+        appointment_data,
+        liveness_data,
+        return_url,
+        request_verification_token
+      },
+      livenessResult: {
+        livenessId,
+        finishedAt
+      }
     }
   }
+*/
+const tokens = new Map();
 
+// تنظيف التوكنات القديمة كل 30 دقيقة
+setInterval(() => {
+  const now = Date.now();
+  for (const [tk, entry] of tokens.entries()) {
+    if (now - entry.createdAt > 60 * 60 * 1000) {
+      tokens.delete(tk);
+    }
+  }
+  console.log("[CLEAN UP] Old tokens removed.");
+}, 30 * 60 * 1000);
+
+// ========================================================
+// Endpoints
+// ========================================================
+
+// 1) START — الصفحة الأصلية ترسل (appointment, liveness, token…)
+app.post("/api/samurai/start", (req, res) => {
   const {
-    user_id,
-    transaction_id,
     appointment_data,
     liveness_data,
     return_url,
-    request_verification_token
+    request_verification_token,
+    user_id,
+    transaction_id
   } = req.body || {};
 
-  if (!user_id || !transaction_id) {
-    return res
-      .status(400)
-      .json({ error: 'missing_user_or_transaction', body: req.body });
+  if (!appointment_data || !liveness_data || !request_verification_token) {
+    return res.status(400).json({
+      ok: false,
+      error: "missing_required_fields"
+    });
   }
 
-  const token = crypto.randomBytes(24).toString('base64url');
+  // إنشاء TOKEN
+  const token = crypto.randomBytes(24).toString("base64url");
   const now = Date.now();
-  const expiresAt = now + 15 * 60 * 1000; // 15 دقيقة
-
-  const meta = {
-    user_id,
-    transaction_id,
-    appointment_data: appointment_data || null,
-    liveness_data: liveness_data || null,
-    return_url: return_url || null,
-    request_verification_token: request_verification_token || null
-  };
 
   tokens.set(token, {
-    meta,
     createdAt: now,
-    expiresAt
+    status: "pending",
+    meta: {
+      appointment_data,
+      liveness_data,
+      return_url,
+      request_verification_token,
+      user_id: user_id || null,
+      transaction_id: transaction_id || null
+    },
+    livenessResult: null
   });
 
-  const selfieUrl = `${SELFIE_BASE_URL}/samurai-selfie?c=${encodeURIComponent(
+  // رابط السيلفي الذي سيستعمله CLIENT
+  const selfieUrl = `${req.protocol}://${req.get("host")}/samurai-selfie?c=${encodeURIComponent(
     token
   )}`;
 
-  console.log('[SAMURAI][SERVER] New selfie token:', {
+  return res.json({
+    ok: true,
     token,
-    meta
-  });
-
-  return res.json({
-    ok: true,
-    selfie_url: selfieUrl,
-    meta
+    selfie_url: selfieUrl
   });
 });
 
-/**
- * GET /api/samurai/token/:token
- * → يرجع meta المرتبطة بالتوكن (باش يستعملها Samurai Client)
- */
-app.get('/api/samurai/token/:token', (req, res) => {
-  const t = req.params.token;
-  const entry = tokens.get(t);
-  if (!entry) {
-    return res.status(404).json({ ok: false, error: 'not_found' });
-  }
-
-  return res.json({
-    ok: true,
-    meta: entry.meta,
-    createdAt: entry.createdAt,
-    expiresAt: entry.expiresAt
-  });
-});
-
-/**
- * GET /samurai-selfie?c=TOKEN
- * صفحة السيلفي (كاميرا + Capture)
- */
-app.get('/samurai-selfie', (req, res) => {
+// 2) SELFIE PAGE — الإضافة الثانية تستعمل /samurai-selfie?c=TOKEN
+// =========================================================
+// هذه ترجع صفحة HTML فيها AUTOSUBMIT لطلب livenessrequest على موقعك
+// =========================================================
+app.get("/samurai-selfie", (req, res) => {
   const token = req.query.c;
-  if (!token || !tokens.has(token)) {
-    return res.status(400).send('Invalid or expired Samurai token');
-  }
-
   const entry = tokens.get(token);
-  if (Date.now() > entry.expiresAt) {
-    tokens.delete(token);
-    return res.status(400).send('Samurai token expired');
+
+  if (!entry) {
+    return res.status(404).send("Invalid Samurai Token.");
   }
 
-  const meta = entry.meta || {};
-  const { user_id, transaction_id } = meta;
+  const meta = entry.meta;
 
-  res.send(`<!doctype html>
-<html lang="en">
+  // صفحة HTML فيها فورم يتم إرساله تلقائياً للـ livenessrequest في موقعك
+  const html = `
+<!doctype html>
+<html>
 <head>
-  <meta charset="utf-8" />
-  <title>Samurai Selfie</title>
-  <style>
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: #050816;
-      color: #f5f5f5;
-      margin: 0;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: flex-start;
-      min-height: 100vh;
-    }
-    .card {
-      background: rgba(15,23,42,0.95);
-      border-radius: 14px;
-      padding: 20px;
-      max-width: 480px;
-      width: 100%;
-      box-shadow: 0 18px 45px rgba(0,0,0,0.45);
-      border: 1px solid rgba(148,163,184,0.35);
-    }
-    h1 {
-      font-size: 20px;
-      margin-bottom: 6px;
-    }
-    .meta {
-      font-size: 12px;
-      color: #9ca3af;
-      margin-bottom: 14px;
-      word-break: break-all;
-    }
-    video, canvas {
-      width: 100%;
-      max-height: 320px;
-      border-radius: 10px;
-      background: #000;
-    }
-    .btn-row {
-      display: flex;
-      gap: 8px;
-      margin-top: 10px;
-    }
-    button {
-      flex: 1;
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: none;
-      cursor: pointer;
-      font-weight: 600;
-    }
-    #btnStart {
-      background: linear-gradient(135deg,#22c55e,#4ade80);
-      color: #022c22;
-    }
-    #btnCapture {
-      background: #0f172a;
-      color: #e5e7eb;
-      border: 1px solid #4b5563;
-    }
-    #status {
-      margin-top: 10px;
-      font-size: 12px;
-      color: #9ca3af;
-    }
-  </style>
+<meta charset="utf-8">
+<title>Samurai Liveness</title>
 </head>
 <body>
-  <div class="card">
-    <h1>Samurai Selfie</h1>
-    <div class="meta">
-      user: <code>${user_id}</code><br/>
-      tx: <code>${transaction_id}</code>
-    </div>
+<p>Samurai: Processing Liveness...</p>
 
-    <video id="video" autoplay playsinline></video>
-    <canvas id="canvas" style="display:none;"></canvas>
+<form id="samuraiForm" method="POST" action="https://YOUR-SITE.com/MAR/appointment/livenessrequest">
+  <input type="hidden" name="AppointmentData" value="${escapeHtml(meta.appointment_data)}">
+  <input type="hidden" name="LivenessData" value="${escapeHtml(meta.liveness_data)}">
+  <input type="hidden" name="ReturnUrl" value="${escapeHtml(meta.return_url)}">
+  <input type="hidden" name="__RequestVerificationToken" value="${escapeHtml(meta.request_verification_token)}">
+</form>
 
-    <div class="btn-row">
-      <button id="btnStart">Allow camera</button>
-      <button id="btnCapture">Capture</button>
-    </div>
+<script>
+  document.getElementById("samuraiForm").submit();
+</script>
 
-    <div id="status">اضغط على "Allow camera" للسماح بالوصول للكاميرا.</div>
-  </div>
-
-  <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const btnStart = document.getElementById('btnStart');
-    const btnCapture = document.getElementById('btnCapture');
-    const statusEl = document.getElementById('status');
-
-    let stream = null;
-
-    btnStart.onclick = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        video.srcObject = stream;
-        statusEl.textContent =
-          'الكاميرا شغّالة، تأكد من وجهك في الإطار ثم اضغط Capture.';
-      } catch (e) {
-        console.error(e);
-        statusEl.textContent = 'فشل الوصول للكاميرا: ' + e.name;
-      }
-    };
-
-    btnCapture.onclick = () => {
-      if (!stream) {
-        statusEl.textContent = 'شغّل الكاميرا أولاً.';
-        return;
-      }
-      const track = stream.getVideoTracks()[0];
-      const settings = track.getSettings();
-      const w = settings.width || 640;
-      const h = settings.height || 480;
-
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, w, h);
-
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      console.log('[SAMURAI] captured selfie length:', dataUrl.length);
-
-      statusEl.textContent =
-        'تم التقاط صورة سيلفي (حالياً غير مرسلة للسيرفر).';
-      // هنا تقدر مستقبلاً تبعث dataUrl لـ /api/samurai/upload-selfie
-    };
-  </script>
 </body>
-</html>`);
+</html>
+  `;
+
+  res.send(html);
 });
 
-// مسار بسيط للفحص
-app.get('/', (req, res) => {
-  res.send('Samurai Liveness server is running.');
+// وظيفة بسيطة للهروب من HTML
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// 3) FINISH — CLIENT كيصيفط النتيجة النهائية (LivenessId)
+app.post("/api/samurai/finish", (req, res) => {
+  const { token, livenessId } = req.body || {};
+
+  const entry = tokens.get(token);
+  if (!entry) {
+    return res.status(404).json({ ok: false, error: "token_not_found" });
+  }
+
+  entry.status = "done";
+  entry.livenessResult = {
+    livenessId,
+    finishedAt: Date.now()
+  };
+
+  return res.json({ ok: true });
 });
 
+// 4) STATUS — الصفحة الأصلية كتسول على النتيجة
+app.get("/api/samurai/status/:token", (req, res) => {
+  const tk = req.params.token;
+  const entry = tokens.get(tk);
+
+  if (!entry) {
+    return res.status(404).json({ ok: false, error: "token_not_found" });
+  }
+
+  return res.json({
+    ok: true,
+    status: entry.status,
+    meta: entry.meta,
+    livenessResult: entry.livenessResult
+  });
+});
+
+// ========================================================
 app.listen(PORT, () => {
-  console.log(`[SAMURAI][SERVER] Listening on port ${PORT}`);
+  console.log(`🟢 Samurai Liveness Server running on PORT ${PORT}`);
 });
