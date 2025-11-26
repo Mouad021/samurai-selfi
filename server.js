@@ -1,10 +1,11 @@
 // ==============================
-// SAMURAI SELFIE SERVER
+// SAMURAI SELFIE SERVER  (V2)
 // ==============================
 
 const express = require('express');
 const cors = require('cors');
-const crypto = require('crypto');
+// crypto ما محتاجينوش دابا، نخليه إلا بغيتي توقعات أخرى مستقبلاً
+// const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 const SELFIE_DOMAIN =
   process.env.SELFIE_DOMAIN || 'https://samurai-selfi.onrender.com';
 
-// رابط SDK ديال Oz
+// رابط SDK ديال Oz (مابقيناش نستعملوه هنا ف HTML، غير ف /v/up لو بغيتي)
 const OZ_SDK_URL =
   process.env.OZ_SDK_URL ||
   'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php';
@@ -25,7 +26,9 @@ const LIVENESS_URL =
 
 app.use(express.json());
 
+// ==============================
 // CORS + preflight
+// ==============================
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header(
@@ -50,23 +53,23 @@ function getIp(req) {
 }
 
 // ==============================
-// 1) /v/up  —  نفس ستايل Cameleon
+// 1) POST /v/up  —  نفس ستايل Cameleon
 // ==============================
 //
-// الإضافة ديال الصفحة الأصلية (Appointment) كترسل:
+// الإضافة ديال صفحة Appointment كترسل:
 // {
 //   role: "appointment",
 //   url: "https://...",
 //   clientId: "xxxx",
 //   ts: 123456789,
-//   meta: { userId, transactionId, ... }
+//   meta: { userId, transactionId, awsWafToken, visitorId, ... }
 // }
 //
-// حنا نرجعو ليها:
+// وحنا نرجعو ليها:
 // {
 //   success: true,
 //   i: "<ip>",
-//   p: "<base64 payload>",
+//   p: "<base64 payload>",   // هادي هي c
 //   s: "<OZ SDK URL>",
 //   t: "<transactionId>",
 //   u: "<userId>",
@@ -97,7 +100,7 @@ app.post('/v/up', (req, res) => {
 
     const pageUrl = url || null;
 
-    // payload لي غادي يبقى ف c (فينشفروه base64)
+    // payload لي غادي ينشفر ويتخزن ف ?c=
     const payload = {
       userId,
       transactionId,
@@ -116,13 +119,20 @@ app.post('/v/up', (req, res) => {
       success: true,
       i: ip,             // ip
       p: c,              // payload base64 (هاد هو c ف /selfie?c=...)
-      s: OZ_SDK_URL,     // SDK link
+      s: OZ_SDK_URL,     // SDK link (للاستعمال من طرف الإضافة إذا بغيتي)
       t: transactionId,  // transaction_id
       u: userId,         // user_id
       v: LIVENESS_URL    // رابط livenessrequest
     };
 
-    console.log('[v/up]', { role, clientId, pageUrl, ip, userId, transactionId });
+    console.log('[v/up]', {
+      role,
+      clientId,
+      pageUrl,
+      ip,
+      userId,
+      transactionId
+    });
 
     return res.json(response);
   } catch (e) {
@@ -135,19 +145,15 @@ app.post('/v/up', (req, res) => {
 });
 
 // ==============================
-// 2) GET /selfie  — صفحة السيلفي
-// ==============================
-//
-// هاد الصفحة هي اللي كاتفتح ف متصفح العميل:
-//   https://samurai-selfi.onrender.com/selfie?c=....
-//
-// الإضافة الأولى كتأخذ p من /v/up وكتدير link:
-//   SELFIE_DOMAIN + '/selfie?c=' + encodeURIComponent(p)
-//
-// هنا كنفك c وكنطلق OzLiveness مباشرة.
-// ==============================
-// ==============================
 // 2) GET /selfie  — صفحة السيلفي البسيطة
+// ==============================
+//
+// هاد الصفحة دابا **ما كتحمّـل حتى SDK**.
+// غير كتخزن c و payload ف window.*
+// باش الإضافة ديال الكلاينت/الكروم هي اللي تتحكم ف:
+//  - طلب favicon
+//  - تحميل plugin_liveness.php
+//  - نداء OzLiveness.open
 // ==============================
 app.get('/selfie', (req, res) => {
   const c = req.query.c || '';
@@ -158,11 +164,27 @@ app.get('/selfie', (req, res) => {
   <meta charset="utf-8"/>
   <title>SAMURAI Selfie</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #000;
+      color: #fff;
+    }
+    #debug {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      font-size: 11px;
+      background: rgba(0,0,0,0.6);
+      padding: 4px 6px;
+      border-radius: 4px;
+      z-index: 999999;
+    }
+  </style>
 </head>
-<body style="margin:0; font-family: system-ui, sans-serif; background:#000; color:#fff;">
-  <div id="debug" style="position:fixed;top:8px;left:8px;font-size:11px;background:rgba(0,0,0,0.6);padding:4px 6px;border-radius:4px;z-index:999999;">
-    SAMURAI SELFIE: loading...
-  </div>
+<body>
+  <div id="debug">SAMURAI SELFIE: waiting extension…</div>
 
   <script>
     (function () {
@@ -175,8 +197,11 @@ app.get('/selfie', (req, res) => {
       var cParam = ${JSON.stringify(c)};
       if (!cParam) {
         dbg('❌ missing c param');
+        window.SAMURAI_C = null;
         return;
       }
+
+      window.SAMURAI_C = cParam;  // نخليها متاحة للإضافة
 
       var payload = null;
       try {
@@ -185,49 +210,30 @@ app.get('/selfie', (req, res) => {
         dbg('payload decoded');
       } catch (e) {
         dbg('❌ invalid c (base64/json)');
+        window.SAMURAI_PAYLOAD_ERROR = true;
         return;
       }
 
-      var userId = payload.userId || payload.UserId || payload.u;
-      var transactionId = payload.transactionId || payload.TransactionId || payload.t;
+      window.SAMURAI_PAYLOAD = payload;
+
+      var userId = payload.userId || payload.UserId || payload.u || null;
+      var transactionId = payload.transactionId || payload.TransactionId || payload.t || null;
+
+      window.SAMURAI_USER_ID = userId;
+      window.SAMURAI_TRANSACTION_ID = transactionId;
 
       if (!userId || !transactionId) {
-        dbg('❌ no userId / transactionId in payload');
-        return;
+        dbg('⚠ payload ok لكن مافيهش userId/transactionId');
+      } else {
+        dbg('READY: userId=' + userId + ' | tx=' + transactionId + ' — extension can start now');
       }
 
-      dbg('userId=' + userId + ' | tx=' + transactionId + ' | loading SDK...');
-
-      // حمّل plugin_liveness.php
-      var s = document.createElement('script');
-      s.src = 'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php';
-      s.async = true;
-      s.onload = function () {
-        dbg('SDK loaded, calling OzLiveness.open');
-
-        if (typeof window.OzLiveness !== 'object') {
-          dbg('❌ OzLiveness not found');
-          return;
-        }
-
-        try {
-          window.OzLiveness.open({
-            lang: 'en',
-            meta: {
-              user_id: userId,
-              transaction_id: transactionId
-            }
-            // ما نزيدو حتى option أخرى باش ما نخرّب والو
-          });
-          dbg('OzLiveness.open called');
-        } catch (e) {
-          dbg('❌ error in OzLiveness.open: ' + (e && e.message || e));
-        }
-      };
-      s.onerror = function (e) {
-        dbg('❌ SDK load error');
-      };
-      document.head.appendChild(s);
+      // ملاحظة مهمة:
+      // هنا ما كاين حتى تحميل ديال plugin_liveness.php.
+      // الإضافة ديال الكلاينت (Chrome extension) هي اللي غادي:
+      //  1) تطلب favicon من BLS بالطريقة اللي بغيتي
+      //  2) من بعد تحمل SDK
+      //  3) من بعد تنادي OzLiveness.open باستعمال userId/transactionId المخزنين هنا.
     })();
   </script>
 </body>
@@ -236,7 +242,8 @@ app.get('/selfie', (req, res) => {
   res.send(html);
 });
 
-
+// ==============================
+// Start server
 // ==============================
 app.listen(PORT, () => {
   console.log('SAMURAI selfie server running on port', PORT);
