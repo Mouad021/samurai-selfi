@@ -8,14 +8,17 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// مثال: https://samurai-selfi.onrender.com
 const SELFIE_BASE_URL =
   process.env.SAMURAI_SELFIE_BASE_URL || 'https://samurai-selfi.onrender.com';
+
+// اختياري: إلا بغيتي تحمي API بمفتاح بسيط
 const API_KEY = process.env.SAMURAI_API_KEY || '';
 
 app.use(cors());
 app.use(express.json());
 
-// تخزين مؤقت للـ tokens (للتجارب فقط)
+// تخزين مؤقت للتوكنات (للتجارب فقط – فالإنتاج استعمل DB)
 const tokens = new Map();
 
 /**
@@ -28,19 +31,16 @@ const tokens = new Map();
  *   return_url?,
  *   request_verification_token?
  * }
+ * → يرجع: { ok, selfie_url, meta }
  */
-app.get('/api/samurai/token/:token', (req, res) => {
-  const t = req.params.token;
-  const entry = tokens.get(t);
-  if (!entry) return res.status(404).json({ error: 'not_found' });
-  return res.json({
-    ok: true,
-    meta: entry.meta,
-    createdAt: entry.createdAt,
-    expiresAt: entry.expiresAt
-  });
-});
-
+app.post('/api/samurai/selfie-link', (req, res) => {
+  // حماية بسيطة بالمفتاح (اختيارية)
+  if (API_KEY) {
+    const clientKey = req.headers['x-samurai-key'];
+    if (!clientKey || clientKey !== API_KEY) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+  }
 
   const {
     user_id,
@@ -52,7 +52,9 @@ app.get('/api/samurai/token/:token', (req, res) => {
   } = req.body || {};
 
   if (!user_id || !transaction_id) {
-    return res.status(400).json({ error: 'missing_user_or_transaction' });
+    return res
+      .status(400)
+      .json({ error: 'missing_user_or_transaction', body: req.body });
   }
 
   const token = crypto.randomBytes(24).toString('base64url');
@@ -91,8 +93,27 @@ app.get('/api/samurai/token/:token', (req, res) => {
 });
 
 /**
+ * GET /api/samurai/token/:token
+ * → يرجع meta المرتبطة بالتوكن (باش يستعملها Samurai Client)
+ */
+app.get('/api/samurai/token/:token', (req, res) => {
+  const t = req.params.token;
+  const entry = tokens.get(t);
+  if (!entry) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+
+  return res.json({
+    ok: true,
+    meta: entry.meta,
+    createdAt: entry.createdAt,
+    expiresAt: entry.expiresAt
+  });
+});
+
+/**
  * GET /samurai-selfie?c=TOKEN
- * صفحة سيلفي، مرتبطة بنفس meta (موعد + user + transaction)
+ * صفحة السيلفي (كاميرا + Capture)
  */
 app.get('/samurai-selfie', (req, res) => {
   const token = req.query.c;
@@ -213,7 +234,8 @@ app.get('/samurai-selfie', (req, res) => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: true });
         video.srcObject = stream;
-        statusEl.textContent = 'الكاميرا شغّالة، تأكد من وجهك في الإطار ثم اضغط Capture.';
+        statusEl.textContent =
+          'الكاميرا شغّالة، تأكد من وجهك في الإطار ثم اضغط Capture.';
       } catch (e) {
         console.error(e);
         statusEl.textContent = 'فشل الوصول للكاميرا: ' + e.name;
@@ -238,26 +260,16 @@ app.get('/samurai-selfie', (req, res) => {
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
       console.log('[SAMURAI] captured selfie length:', dataUrl.length);
 
-      statusEl.textContent = 'تم التقاط صورة سيلفي (حالياً غير مرسلة للسيرفر).';
+      statusEl.textContent =
+        'تم التقاط صورة سيلفي (حالياً غير مرسلة للسيرفر).';
+      // هنا تقدر مستقبلاً تبعث dataUrl لـ /api/samurai/upload-selfie
     };
   </script>
 </body>
 </html>`);
 });
 
-// Endpoint إضافي (اختياري) باش تجيب Meta ديال token/موعد
-app.get('/api/samurai/token/:token', (req, res) => {
-  const t = req.params.token;
-  const entry = tokens.get(t);
-  if (!entry) return res.status(404).json({ error: 'not_found' });
-  return res.json({
-    ok: true,
-    meta: entry.meta,
-    createdAt: entry.createdAt,
-    expiresAt: entry.expiresAt
-  });
-});
-
+// مسار بسيط للفحص
 app.get('/', (req, res) => {
   res.send('Samurai Liveness server is running.');
 });
