@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 10000;
 
 // إعدادات من env
 const SELFIE_BASE_URL =
-  process.env.SAMURAI_SELFIE_BASE_URL || 'https://your-samurai-server.com'; // بدّلها من env
+  process.env.SAMURAI_SELFIE_BASE_URL || 'https://samurai-selfi.onrender.com'; // بدّلها من env
 const API_KEY = process.env.SAMURAI_API_KEY || ''; // اختيارية
 
 app.use(cors());
