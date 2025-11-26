@@ -1,11 +1,10 @@
 // ==============================
-// SAMURAI SELFIE SERVER  (V2)
+// SAMURAI SELFIE SERVER  (V3 + favicon proxy)
 // ==============================
 
 const express = require('express');
 const cors = require('cors');
-// crypto ما محتاجينوش دابا، نخليه إلا بغيتي توقعات أخرى مستقبلاً
-// const crypto = require('crypto');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 const SELFIE_DOMAIN =
   process.env.SELFIE_DOMAIN || 'https://samurai-selfi.onrender.com';
 
-// رابط SDK ديال Oz (مابقيناش نستعملوه هنا ف HTML، غير ف /v/up لو بغيتي)
+// رابط SDK ديال Oz (مفيد غير كـ info / لو بغيت تستعمله من الإضافة)
 const OZ_SDK_URL =
   process.env.OZ_SDK_URL ||
   'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php';
@@ -23,6 +22,10 @@ const OZ_SDK_URL =
 const LIVENESS_URL =
   process.env.LIVENESS_URL ||
   'https://www.blsspainmorocco.net/MAR/appointment/livenessrequest';
+
+// رابط الفافيكُن الأصلي ديال BLS
+const BLS_FAVICON_URL =
+  'https://www.blsspainmorocco.net/assets/images/favicon.png';
 
 app.use(express.json());
 
@@ -54,27 +57,6 @@ function getIp(req) {
 
 // ==============================
 // 1) POST /v/up  —  نفس ستايل Cameleon
-// ==============================
-//
-// الإضافة ديال صفحة Appointment كترسل:
-// {
-//   role: "appointment",
-//   url: "https://...",
-//   clientId: "xxxx",
-//   ts: 123456789,
-//   meta: { userId, transactionId, awsWafToken, visitorId, ... }
-// }
-//
-// وحنا نرجعو ليها:
-// {
-//   success: true,
-//   i: "<ip>",
-//   p: "<base64 payload>",   // هادي هي c
-//   s: "<OZ SDK URL>",
-//   t: "<transactionId>",
-//   u: "<userId>",
-//   v: "<livenessrequest url>"
-// }
 // ==============================
 app.post('/v/up', (req, res) => {
   try {
@@ -119,7 +101,7 @@ app.post('/v/up', (req, res) => {
       success: true,
       i: ip,             // ip
       p: c,              // payload base64 (هاد هو c ف /selfie?c=...)
-      s: OZ_SDK_URL,     // SDK link (للاستعمال من طرف الإضافة إذا بغيتي)
+      s: OZ_SDK_URL,     // SDK link (لو حبيتي تستعمله من الكلاينت)
       t: transactionId,  // transaction_id
       u: userId,         // user_id
       v: LIVENESS_URL    // رابط livenessrequest
@@ -146,14 +128,7 @@ app.post('/v/up', (req, res) => {
 
 // ==============================
 // 2) GET /selfie  — صفحة السيلفي البسيطة
-// ==============================
-//
-// هاد الصفحة دابا **ما كتحمّـل حتى SDK**.
-// غير كتخزن c و payload ف window.*
-// باش الإضافة ديال الكلاينت/الكروم هي اللي تتحكم ف:
-//  - طلب favicon
-//  - تحميل plugin_liveness.php
-//  - نداء OzLiveness.open
+//    بلا SDK، غير كتجهز payload للإضافة
 // ==============================
 app.get('/selfie', (req, res) => {
   const c = req.query.c || '';
@@ -201,7 +176,7 @@ app.get('/selfie', (req, res) => {
         return;
       }
 
-      window.SAMURAI_C = cParam;  // نخليها متاحة للإضافة
+      window.SAMURAI_C = cParam;  // متاحة للإضافة
 
       var payload = null;
       try {
@@ -227,19 +202,63 @@ app.get('/selfie', (req, res) => {
       } else {
         dbg('READY: userId=' + userId + ' | tx=' + transactionId + ' — extension can start now');
       }
-
-      // ملاحظة مهمة:
-      // هنا ما كاين حتى تحميل ديال plugin_liveness.php.
-      // الإضافة ديال الكلاينت (Chrome extension) هي اللي غادي:
-      //  1) تطلب favicon من BLS بالطريقة اللي بغيتي
-      //  2) من بعد تحمل SDK
-      //  3) من بعد تنادي OzLiveness.open باستعمال userId/transactionId المخزنين هنا.
     })();
   </script>
 </body>
 </html>`;
 
   res.send(html);
+});
+
+// ==============================
+// 3) GET /bls-favicon  — بروكسي للفافيكُن
+// ==============================
+//
+// المتصفح يطلب:
+//   https://samurai-selfi.onrender.com/bls-favicon
+//
+// السيرفر كيدير GET حقيقي لـ BLS
+//   → ياخد الصورة كما هي (حتى لو جا status 202)
+//   → ويرجعها للمتصفح بـ 200 OK و image/png
+// ==============================
+app.get('/bls-favicon', (req, res) => {
+  console.log('[bls-favicon] proxy request');
+
+  const options = {
+    method: 'GET',
+    headers: {
+      // نحاولو نقلدو متصفح عادي
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+      'Accept':
+        'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9'
+    }
+  };
+
+  https.get(BLS_FAVICON_URL, options, (upstream) => {
+    const chunks = [];
+    upstream.on('data', (chunk) => chunks.push(chunk));
+    upstream.on('end', () => {
+      const buf = Buffer.concat(chunks);
+
+      // حتى لو BLS رجعت 202، حنا نرجعو 200 للبراوزر
+      res.status(200);
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Content-Length', buf.length);
+      res.send(buf);
+
+      console.log(
+        '[bls-favicon] upstream status=',
+        upstream.statusCode,
+        ' → sent 200 to client, bytes=',
+        buf.length
+      );
+    });
+  }).on('error', (err) => {
+    console.error('[bls-favicon] error:', err);
+    res.status(500).send('proxy error');
+  });
 });
 
 // ==============================
