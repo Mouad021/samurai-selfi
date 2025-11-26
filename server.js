@@ -1,221 +1,157 @@
-// ==============================
-// SAMURAI SELFIE SERVER (BRIDGE)
-// ==============================
-
-import express from "express";
-import cors from "cors";
-import crypto from "crypto";
+// server.js
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
 
 const app = express();
+
+// ==============================
+//  إعدادات أساسية
+// ==============================
 const PORT = process.env.PORT || 3000;
 
-// الدومين ديال السيلفي (نفس اللي كتحطو فالإضافات)
-const SELFIE_DOMAIN =
-  process.env.SELFIE_DOMAIN || "https://samurai-selfi.onrender.com";
+// SDK link (s)
+const OZ_SDK_URL =
+  process.env.OZ_SDK_URL ||
+  'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php';
 
-app.use(cors());
+// رابط POST النهائي (v)
+const LIVENESS_URL =
+  process.env.LIVENESS_URL ||
+  'https://www.blsspainmorocco.net/MAR/appointment/livenessrequest';
+
 app.use(express.json());
 
-function makeId(len = 16) {
-  return crypto.randomBytes(len).toString("hex");
-}
+// CORS + preflight بحال اللي شفت فـ Network تاع Cameleon
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*'); // ولا حدد دومينات اللي عندك
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Content-Type, X-Requested-With'
+  );
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    // preflight
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // ==============================
-// 1) API — المتصفح الأول (Appointment)
+//  /v/up  —  نفس فكرة Cameleon
 // ==============================
 //
-// الإضافة الأولى كتبعث:
-// { userId, transactionId, awsWafToken?, visitorId?, pageUrl? }
+// الإضافة كترسل:
 //
-// و السيرفر كيرجع:
+// {
+//   role: "appointment",
+//   url: "https://...",
+//   clientId: "xxxx",
+//   ts: 1730000000,
+//   meta: {
+//     userId,
+//     transactionId,
+//     appointmentData,
+//     livenessData,
+//     verificationToken,
+//     returnUrl
+//   }
+// }
+//
+// ونحن نرجعو ليها:
+//
 // {
 //   success: true,
-//   selfieUrl: "https://.../selfie?c=...",
-//   p: base64Payload,
-//   u: ticket,
-//   t: token,
-//   i: ip
+//   i: "ip",
+//   p: "<base64 payload>",
+//   s: "<SDK URL>",
+//   t: "<transaction_id>",
+//   u: "<user_id>",
+//   v: "<livenessrequest url>"
 // }
 // ==============================
-app.post("/api/selfie-link", (req, res) => {
+app.post('/v/up', (req, res) => {
   try {
-    const { userId, transactionId, awsWafToken, visitorId, pageUrl } =
-      req.body || {};
+    const { role, url, clientId, ts, meta = {} } = req.body || {};
 
-    if (!userId || !transactionId) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing userId or transactionId",
-      });
-    }
+    // نضمنو وجود meta
+    const userId =
+      meta.userId ||
+      meta.UserId ||
+      meta.u ||
+      null;
+    const transactionId =
+      meta.transactionId ||
+      meta.TransactionId ||
+      meta.t ||
+      null;
+    const appointmentData =
+      meta.appointmentData ||
+      meta.AppointmentData ||
+      null;
+    const livenessData =
+      meta.livenessData ||
+      meta.LivenessData ||
+      null;
+    const verificationToken =
+      meta.verificationToken ||
+      meta.__RequestVerificationToken ||
+      null;
+    const returnUrl =
+      meta.returnUrl ||
+      meta.ReturnUrl ||
+      null;
 
+    // payload اللي غادي نشفروه فـ p (تقدر تغيّرو كيف بغيتي)
     const payload = {
       userId,
       transactionId,
-      awsWafToken: awsWafToken || null,
-      visitorId: visitorId || null,
-      pageUrl: pageUrl || null,
-      createdAt: Date.now(),
+      appointmentData,
+      livenessData,
+      verificationToken,
+      returnUrl,
+      url,
+      role,
+      clientId,
+      ts: ts || Date.now()
     };
 
-    // JSON → base64
     const json = JSON.stringify(payload);
-    const fp = Buffer.from(json, "utf8").toString("base64");
+    const p = Buffer.from(json, 'utf8').toString('base64');
 
-    const ticket = makeId(12);
-    const token = makeId(12);
+    // ip ديال الكلاينت (تقريبية حسب البروكسي)
+    const ip =
+      req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+      req.socket.remoteAddress ||
+      '';
 
-    // الرابط اللي غادي يمشي به المتصفح الثاني
-    const selfieUrl = `${SELFIE_DOMAIN}/selfie?c=${encodeURIComponent(fp)}`;
-
-    return res.json({
+    const response = {
       success: true,
-      selfieUrl,
-      p: fp,
-      u: ticket,
-      t: token,
-      i: req.ip,
-    });
+      i: ip,
+      p,                 // payload مشفّر
+      s: OZ_SDK_URL,     // SDK link
+      t: transactionId,  // transaction_id
+      u: userId,         // user_id
+      v: LIVENESS_URL    // رابط POST النهائي
+    };
+
+    console.log('[v/up] req from', ip, 'role=', role, 'url=', url);
+    // ممكن تخزن clientId/meta فـ DB لو بغيت تتبع الجلسات
+
+    return res.json(response);
   } catch (e) {
-    return res.status(500).json({ success: false, error: e.message });
+    console.error('[v/up] error:', e);
+    return res.status(500).json({
+      success: false,
+      error: e.message || 'internal error'
+    });
   }
 });
 
 // ==============================
-// 2) SELFIE PAGE — المتصفح الثاني (جهاز السيلفي)
-// ==============================
-//
-// هادي صفحة "Bridge" فقط:
-// - كترجع HTML خفيف (200 OK) باش content_script ديال الإضافة الثانية يخدم.
-// - الإضافة الثانية (selfie-bridge.js) هي اللي كتشوف c فـ URL,
-//   كتفك JSON وتخزن payload → من بعد كتحول التاب إلى
-//   https://www.blsspainmorocco.net/MAR/Appointment/Liveness
-//
-// مابقيناش كنستعمل OzLiveness هنا فالدومين ديالنا، كامل السيلفي الحقيقي
-// غادي يتدار على دومين BLS فصفحة /MAR/Appointment/Liveness.
-// ==============================
-app.get("/selfie", (req, res) => {
-  const c = (req.query.c || "").toString();
-
-  // نعمل escape بسيط لـ c باش مايديرش أي injection فـ HTML
-  const safeC = c
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-
-  const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>SAMURAI Selfie Bridge</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-
-  <style>
-    :root {
-      color-scheme: dark;
-    }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top, #06101f, #02040a 55%, #000000);
-      margin: 0;
-      padding: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #f4fbff;
-    }
-    .card {
-      width: 480px;
-      max-width: 95vw;
-      background: rgba(3, 8, 18, 0.96);
-      border-radius: 16px;
-      border: 1px solid rgba(0, 255, 180, 0.4);
-      box-shadow:
-        0 18px 40px rgba(0, 0, 0, 0.8),
-        0 0 0 1px rgba(140, 255, 220, 0.2);
-      padding: 22px 20px 18px;
-    }
-    .title {
-      font-size: 18px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-    .dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 999px;
-      background: #00ffb4;
-      box-shadow: 0 0 10px #00ffb4;
-    }
-    .subtitle {
-      font-size: 12px;
-      opacity: 0.86;
-      margin-bottom: 10px;
-    }
-    .badge {
-      font-size: 11px;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      background: rgba(0, 255, 180, 0.06);
-      border: 1px solid rgba(0, 255, 180, 0.4);
-      margin-bottom: 10px;
-    }
-    .code {
-      font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 11px;
-      background: #02060f;
-      border-radius: 8px;
-      padding: 8px 10px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      word-break: break-all;
-      margin-bottom: 10px;
-    }
-    .hint {
-      font-size: 11px;
-      opacity: 0.7;
-      margin-top: 2px;
-    }
-  </style>
-</head>
-
-<body>
-  <div class="card">
-    <div class="title">
-      <div class="dot"></div>
-      <span>SAMURAI Selfie Bridge</span>
-    </div>
-    <div class="subtitle">
-      هذه الصفحة مجرد جسر بين المتصفح الأول (Appointment) والمتصفح الثاني (جهاز السيلفي).<br/>
-      إضافة SAMURAI في هذا المتصفح ستقرأ القيمة <code>c</code> وتحوّلك تلقائياً إلى صفحة BLS Liveness.
-    </div>
-
-    <div class="badge">
-      c-param من المتصفح الأول:
-    </div>
-    <div class="code">${safeC || "(لا يوجد c في الرابط)"}</div>
-
-    <div class="hint">
-      • إذا رأيت هذه الصفحة فقط، تأكد أن إضافة SAMURAI Selfie Client مفعلة على هذا المتصفح.<br/>
-      • لا يوجد أي سيلفي هنا، السيلفي الحقيقي يتم على دومين BLS بعد التحويل.
-    </div>
-  </div>
-</body>
-</html>`;
-
-  res.send(html);
-});
-
-// ==============================
-// 3) تشغيل السيرفر
+//  تشغيل السرفر
 // ==============================
 app.listen(PORT, () => {
-  console.log("SAMURAI selfie server (bridge) running on port", PORT);
+  console.log('SAMURAI /v/up server listening on port', PORT);
 });
