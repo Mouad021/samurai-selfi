@@ -1,13 +1,13 @@
 {
-  "name": "samurai-selfie-server",
+  "name": "milano-selfie-server",
   "version": "1.0.0",
-  "type": "module",
+  "description": "MILANO server to collect OzLiveness data and generate selfie link",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.0"
   }
 }
