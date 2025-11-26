@@ -1,7 +1,6 @@
 {
-  "name": "samurai-selfie-server",
+  "name": "samurai-selfi-server",
   "version": "1.0.0",
-  "description": "SAMURAI /v/up bridge server (Cameleon style)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
