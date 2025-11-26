@@ -29,13 +29,18 @@ const tokens = new Map();
  *   request_verification_token?
  * }
  */
-app.post('/api/samurai/selfie-link', (req, res) => {
-  if (API_KEY) {
-    const clientKey = req.headers['x-samurai-key'];
-    if (!clientKey || clientKey !== API_KEY) {
-      return res.status(401).json({ error: 'unauthorized' });
-    }
-  }
+app.get('/api/samurai/token/:token', (req, res) => {
+  const t = req.params.token;
+  const entry = tokens.get(t);
+  if (!entry) return res.status(404).json({ error: 'not_found' });
+  return res.json({
+    ok: true,
+    meta: entry.meta,
+    createdAt: entry.createdAt,
+    expiresAt: entry.expiresAt
+  });
+});
+
 
   const {
     user_id,
