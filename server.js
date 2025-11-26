@@ -8,27 +8,28 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// من الأفضل تضبطها فـ Render:
-// SAMURAI_SELFIE_BASE_URL = https://samurai-selfi.onrender.com
 const SELFIE_BASE_URL =
   process.env.SAMURAI_SELFIE_BASE_URL || 'https://samurai-selfi.onrender.com';
-
-const API_KEY = process.env.SAMURAI_API_KEY || ''; // اختيارية، خليه فارغ إلا ما بغيتش حماية بسيطة
+const API_KEY = process.env.SAMURAI_API_KEY || '';
 
 app.use(cors());
 app.use(express.json());
 
-// تخزين التوكنات فـ الذاكرة (للتجارب)
-// للإنتاج استعمل DB حقيقي (Redis / Postgres...)
+// تخزين مؤقت للـ tokens (للتجارب فقط)
 const tokens = new Map();
 
 /**
  * POST /api/samurai/selfie-link
- * body: { user_id, transaction_id }
- * يرجع: { ok, selfie_url }
+ * body: {
+ *   user_id,
+ *   transaction_id,
+ *   appointment_data?,
+ *   liveness_data?,
+ *   return_url?,
+ *   request_verification_token?
+ * }
  */
 app.post('/api/samurai/selfie-link', (req, res) => {
-  // حماية بسيطة بمفتاح API اختياري
   if (API_KEY) {
     const clientKey = req.headers['x-samurai-key'];
     if (!clientKey || clientKey !== API_KEY) {
@@ -36,19 +37,34 @@ app.post('/api/samurai/selfie-link', (req, res) => {
     }
   }
 
-  const { user_id, transaction_id } = req.body || {};
+  const {
+    user_id,
+    transaction_id,
+    appointment_data,
+    liveness_data,
+    return_url,
+    request_verification_token
+  } = req.body || {};
+
   if (!user_id || !transaction_id) {
     return res.status(400).json({ error: 'missing_user_or_transaction' });
   }
 
-  // توكن عشوائي
   const token = crypto.randomBytes(24).toString('base64url');
   const now = Date.now();
-  const expiresAt = now + 15 * 60 * 1000; // 15 دقيقة صلاحية
+  const expiresAt = now + 15 * 60 * 1000; // 15 دقيقة
 
-  tokens.set(token, {
+  const meta = {
     user_id,
     transaction_id,
+    appointment_data: appointment_data || null,
+    liveness_data: liveness_data || null,
+    return_url: return_url || null,
+    request_verification_token: request_verification_token || null
+  };
+
+  tokens.set(token, {
+    meta,
     createdAt: now,
     expiresAt
   });
@@ -59,19 +75,19 @@ app.post('/api/samurai/selfie-link', (req, res) => {
 
   console.log('[SAMURAI][SERVER] New selfie token:', {
     token,
-    user_id,
-    transaction_id
+    meta
   });
 
   return res.json({
     ok: true,
-    selfie_url: selfieUrl
+    selfie_url: selfieUrl,
+    meta
   });
 });
 
 /**
  * GET /samurai-selfie?c=TOKEN
- * صفحة واجهة السيلفي (كاميرا + Capture)
+ * صفحة سيلفي، مرتبطة بنفس meta (موعد + user + transaction)
  */
 app.get('/samurai-selfie', (req, res) => {
   const token = req.query.c;
@@ -85,7 +101,8 @@ app.get('/samurai-selfie', (req, res) => {
     return res.status(400).send('Samurai token expired');
   }
 
-  const { user_id, transaction_id } = entry;
+  const meta = entry.meta || {};
+  const { user_id, transaction_id } = meta;
 
   res.send(`<!doctype html>
 <html lang="en">
@@ -217,14 +234,25 @@ app.get('/samurai-selfie', (req, res) => {
       console.log('[SAMURAI] captured selfie length:', dataUrl.length);
 
       statusEl.textContent = 'تم التقاط صورة سيلفي (حالياً غير مرسلة للسيرفر).';
-      // مستقبلاً يمكنك إرسال dataUrl لـ /api/samurai/upload-selfie
     };
   </script>
 </body>
 </html>`);
 });
 
-// مسار بسيط للفحص
+// Endpoint إضافي (اختياري) باش تجيب Meta ديال token/موعد
+app.get('/api/samurai/token/:token', (req, res) => {
+  const t = req.params.token;
+  const entry = tokens.get(t);
+  if (!entry) return res.status(404).json({ error: 'not_found' });
+  return res.json({
+    ok: true,
+    meta: entry.meta,
+    createdAt: entry.createdAt,
+    expiresAt: entry.expiresAt
+  });
+});
+
 app.get('/', (req, res) => {
   res.send('Samurai Liveness server is running.');
 });
