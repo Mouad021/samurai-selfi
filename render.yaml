@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: samurai-selfie
-    env: node
-    region: frankfurt
-    plan: free
-    buildCommand: "npm install"
-    startCommand: "npm start"
