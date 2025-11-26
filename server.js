@@ -1,199 +1,180 @@
-// server.js — Samurai Selfie Server
-// ========================================================
-//  Node + Express server to manage:
-//  - Start selfie session
-//  - Deliver selfie URL (token-based)
-//  - Receive Liveness result
-//  - Poll status from origin page
-// ========================================================
-
-import express from "express";
-import cors from "cors";
-import crypto from "crypto";
+// server.js
+import express from 'express';
+import cors from 'cors';
+import crypto from 'crypto';
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
-app.use(cors());
-
 const PORT = process.env.PORT || 3000;
 
-// ========================================================
-// TOKEN STORAGE (In-Memory)
-// ========================================================
-/*
-  Schema:
-  tokens = {
-    token123: {
-      createdAt: 123456,
-      status: 'pending' | 'done',
-      meta: {
-        user_id,
-        transaction_id,
-        appointment_data,
-        liveness_data,
-        return_url,
-        request_verification_token
-      },
-      livenessResult: {
-        livenessId,
-        finishedAt
-      }
+// نسمحو للريكوستات من أي دومين (عدلها إذا بغيت)
+app.use(cors());
+app.use(express.json());
+
+// تخزين بسيط فالميموري (يمكن تبدلو ب DB)
+const tickets = new Map();
+
+function makeId(len = 16) {
+  return crypto.randomBytes(len).toString('hex');
+}
+
+// ================================
+// 1) الإندبوينت لي كتتوصل مع الإضافة
+// ================================
+//
+// الإضافة ترسل مثلاً JSON:
+// {
+//   "userId": "...",
+//   "transactionId": "...",
+//   "awsWafToken": "...",
+//   "visitorId": "...",
+//   "pageUrl": "..."
+// }
+//
+// وهو يرجع بحال Cameleon:
+// {
+//   "success": true,
+//   "u": "ticket-uuid",
+//   "t": "token2-uuid",
+//   "i": "client-ip",
+//   "v": "https://YOURDOMAIN.com/selfie?c=...",
+//   "p": "BASE64(JSON)",
+//   "selfieUrl": "نفس v"
+// }
+//
+app.post('/api/selfie-link', (req, res) => {
+  try {
+    const {
+      userId,
+      transactionId,
+      awsWafToken,
+      visitorId,
+      pageUrl
+    } = req.body || {};
+
+    if (!userId || !transactionId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId or transactionId'
+      });
     }
-  }
-*/
-const tokens = new Map();
 
-// تنظيف التوكنات القديمة كل 30 دقيقة
-setInterval(() => {
-  const now = Date.now();
-  for (const [tk, entry] of tokens.entries()) {
-    if (now - entry.createdAt > 60 * 60 * 1000) {
-      tokens.delete(tk);
-    }
-  }
-  console.log("[CLEAN UP] Old tokens removed.");
-}, 30 * 60 * 1000);
+    // نحضرو payload لي بغينا نحتافضو بيه
+    const payload = {
+      userId,
+      transactionId,
+      awsWafToken: awsWafToken || null,
+      visitorId: visitorId || null,
+      pageUrl: pageUrl || null,
+      createdAt: Date.now()
+    };
 
-// ========================================================
-// Endpoints
-// ========================================================
+    // نحولو JSON → base64 (Fp)
+    const json = JSON.stringify(payload);
+    const fp = Buffer.from(json, 'utf8').toString('base64'); // تقدر تستعمل base64url إلا بغيت
 
-// 1) START — الصفحة الأصلية ترسل (appointment, liveness, token…)
-app.post("/api/samurai/start", (req, res) => {
-  const {
-    appointment_data,
-    liveness_data,
-    return_url,
-    request_verification_token,
-    user_id,
-    transaction_id
-  } = req.body || {};
+    // نولد ticket و token
+    const ticket = makeId(16);
+    const token2 = makeId(16);
+    const clientIp =
+      req.headers['x-forwarded-for']?.toString().split(',')[0].trim() ||
+      req.socket.remoteAddress ||
+      '';
 
-  if (!appointment_data || !liveness_data || !request_verification_token) {
-    return res.status(400).json({
-      ok: false,
-      error: "missing_required_fields"
+    // نخزن كلشي فالميموري
+    tickets.set(ticket, {
+      ticket,
+      fp,
+      payload,
+      clientIp
+    });
+
+    // رابط السيلفي لي غادي تفتحو فمتصفح آخر
+    const SELF_DOMAIN = process.env.SELFIE_DOMAIN || 'https://samurai-selfi.onrender.com';
+    const selfieUrl = `${SELF_DOMAIN}/selfie?c=${encodeURIComponent(fp)}`;
+
+    // ستايل بحال Cameleon
+    return res.json({
+      success: true,
+      u: ticket,        // بحال applicationId
+      t: token2,        // token ثانوي
+      i: clientIp,      // IP ديال المتصفح لي نادى الإندبوينت
+      v: selfieUrl,     // نقدر نستعملو كما هو
+      p: fp,            // base64 JSON
+      selfieUrl         // نفس v للوضوح
+    });
+  } catch (e) {
+    console.error('[/api/selfie-link] error', e);
+    return res.status(500).json({
+      success: false,
+      error: 'Server error'
     });
   }
-
-  // إنشاء TOKEN
-  const token = crypto.randomBytes(24).toString("base64url");
-  const now = Date.now();
-
-  tokens.set(token, {
-    createdAt: now,
-    status: "pending",
-    meta: {
-      appointment_data,
-      liveness_data,
-      return_url,
-      request_verification_token,
-      user_id: user_id || null,
-      transaction_id: transaction_id || null
-    },
-    livenessResult: null
-  });
-
-  // رابط السيلفي الذي سيستعمله CLIENT
-  const selfieUrl = `${req.protocol}://${req.get("host")}/samurai-selfie?c=${encodeURIComponent(
-    token
-  )}`;
-
-  return res.json({
-    ok: true,
-    token,
-    selfie_url: selfieUrl
-  });
 });
 
-// 2) SELFIE PAGE — الإضافة الثانية تستعمل /samurai-selfie?c=TOKEN
-// =========================================================
-// هذه ترجع صفحة HTML فيها AUTOSUBMIT لطلب livenessrequest على موقعك
-// =========================================================
-app.get("/samurai-selfie", (req, res) => {
-  const token = req.query.c;
-  const entry = tokens.get(token);
+// ================================
+// 2) إندبوينت باش المتصفح الثاني يقرا data من c (اختياري debug)
+// ================================
+app.get('/api/selfie/decode', (req, res) => {
+  const { c } = req.query;
+  if (!c) {
+    return res.status(400).json({ success: false, error: 'Missing c' });
+  }
+  try {
+    const json = Buffer.from(c, 'base64').toString('utf8');
+    const payload = JSON.parse(json);
+    return res.json({ success: true, payload });
+  } catch (e) {
+    return res.status(400).json({ success: false, error: 'Bad c/base64' });
+  }
+});
 
-  if (!entry) {
-    return res.status(404).send("Invalid Samurai Token.");
+// ================================
+// 3) صفحة بسيطة للسيلفي (يمكن تبدلها بصفحتك)
+// ================================
+app.get('/selfie', (req, res) => {
+  const { c } = req.query;
+  if (!c) {
+    return res
+      .status(400)
+      .send('Missing c parameter (base64 encoded payload)');
   }
 
-  const meta = entry.meta;
-
-  // صفحة HTML فيها فورم يتم إرساله تلقائياً للـ livenessrequest في موقعك
+  // هنا فقط كنوري payload، انت فالحقيقي غادي تدير OzLiveness UI
   const html = `
 <!doctype html>
 <html>
-<head>
-<meta charset="utf-8">
-<title>Samurai Liveness</title>
-</head>
-<body>
-<p>Samurai: Processing Liveness...</p>
+  <head>
+    <meta charset="utf-8" />
+    <title>MILANO Selfie</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      pre { background: #111; color:#0f0; padding:10px; border-radius:6px; }
+    </style>
+  </head>
+  <body>
+    <h2>MILANO Selfie – Debug Payload</h2>
+    <p>c (base64):</p>
+    <pre>${c}</pre>
+    <p>Decoded JSON:</p>
+    <pre id="payload"></pre>
 
-<form id="samuraiForm" method="POST" action="https://www.blsspainmorocco.net/MAR/appointment/livenessrequest">
-  <input type="hidden" name="AppointmentData" value="${escapeHtml(meta.appointment_data)}">
-  <input type="hidden" name="LivenessData" value="${escapeHtml(meta.liveness_data)}">
-  <input type="hidden" name="ReturnUrl" value="${escapeHtml(meta.return_url)}">
-  <input type="hidden" name="__RequestVerificationToken" value="${escapeHtml(meta.request_verification_token)}">
-</form>
-
-<script>
-  document.getElementById("samuraiForm").submit();
-</script>
-
-</body>
+    <script>
+      try {
+        const json = atob(${JSON.stringify(c)});
+        const obj = JSON.parse(json);
+        document.getElementById('payload').textContent =
+          JSON.stringify(obj, null, 2);
+      } catch(e) {
+        document.getElementById('payload').textContent = 'Decode error: ' + e;
+      }
+    </script>
+  </body>
 </html>
   `;
-
   res.send(html);
 });
 
-// وظيفة بسيطة للهروب من HTML
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-// 3) FINISH — CLIENT كيصيفط النتيجة النهائية (LivenessId)
-app.post("/api/samurai/finish", (req, res) => {
-  const { token, livenessId } = req.body || {};
-
-  const entry = tokens.get(token);
-  if (!entry) {
-    return res.status(404).json({ ok: false, error: "token_not_found" });
-  }
-
-  entry.status = "done";
-  entry.livenessResult = {
-    livenessId,
-    finishedAt: Date.now()
-  };
-
-  return res.json({ ok: true });
-});
-
-// 4) STATUS — الصفحة الأصلية كتسول على النتيجة
-app.get("/api/samurai/status/:token", (req, res) => {
-  const tk = req.params.token;
-  const entry = tokens.get(tk);
-
-  if (!entry) {
-    return res.status(404).json({ ok: false, error: "token_not_found" });
-  }
-
-  return res.json({
-    ok: true,
-    status: entry.status,
-    meta: entry.meta,
-    livenessResult: entry.livenessResult
-  });
-});
-
-// ========================================================
+// ================================
 app.listen(PORT, () => {
-  console.log(`🟢 Samurai Liveness Server running on PORT ${PORT}`);
+  console.log('MILANO selfie server listening on port', PORT);
 });
