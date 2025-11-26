@@ -131,7 +131,7 @@ app.get("/samurai-selfie", (req, res) => {
 <body>
 <p>Samurai: Processing Liveness...</p>
 
-<form id="samuraiForm" method="POST" action="https://YOUR-SITE.com/MAR/appointment/livenessrequest">
+<form id="samuraiForm" method="POST" action="https://www.blsspainmorocco.net/MAR/appointment/livenessrequest">
   <input type="hidden" name="AppointmentData" value="${escapeHtml(meta.appointment_data)}">
   <input type="hidden" name="LivenessData" value="${escapeHtml(meta.liveness_data)}">
   <input type="hidden" name="ReturnUrl" value="${escapeHtml(meta.return_url)}">
