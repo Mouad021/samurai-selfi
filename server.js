@@ -146,199 +146,88 @@ app.post('/v/up', (req, res) => {
 //
 // هنا كنفك c وكنطلق OzLiveness مباشرة.
 // ==============================
+// ==============================
+// 2) GET /selfie  — صفحة السيلفي البسيطة
+// ==============================
 app.get('/selfie', (req, res) => {
   const c = req.query.c || '';
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
+  const html = `<!doctype html>
+<html>
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8"/>
   <title>SAMURAI Selfie</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top, #081a3a 0, #020410 55%, #000 100%);
-      color: #f4fbff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-    }
-    .card {
-      background: rgba(3, 10, 30, 0.96);
-      border-radius: 18px;
-      padding: 18px 20px;
-      box-shadow: 0 18px 45px rgba(0,0,0,0.65);
-      border: 1px solid rgba(0, 200, 255, 0.3);
-      max-width: 420px;
-      width: 100%;
-    }
-    .title {
-      font-size: 16px;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-    .sub {
-      font-size: 12px;
-      opacity: 0.8;
-      margin-bottom: 12px;
-    }
-    .status {
-      font-size: 12px;
-      margin-top: 10px;
-      opacity: 0.9;
-    }
-    button {
-      margin-top: 6px;
-      width: 100%;
-      padding: 8px 10px;
-      border-radius: 999px;
-      border: none;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      background: linear-gradient(90deg,#00f2ff,#00ff7c);
-      color: #001018;
-    }
-    code {
-      font-size: 11px;
-      background: rgba(0,0,0,0.4);
-      padding: 2px 4px;
-      border-radius: 4px;
-    }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
 </head>
-<body>
-  <div class="card">
-    <div class="title">SAMURAI Selfie</div>
-    <div class="sub">
-      رابط تم إنشاؤه من صفحة الموعد.<br/>
-      سيتم فتح السيلفي لهذا الموعد على هذا الجهاز.
-    </div>
-    <div id="info" class="sub" style="font-size:11px;"></div>
-    <button id="btnStart">🚀 Start Selfie</button>
-    <div id="status" class="status">Loading...</div>
+<body style="margin:0; font-family: system-ui, sans-serif; background:#000; color:#fff;">
+  <div id="debug" style="position:fixed;top:8px;left:8px;font-size:11px;background:rgba(0,0,0,0.6);padding:4px 6px;border-radius:4px;z-index:999999;">
+    SAMURAI SELFIE: loading...
   </div>
 
   <script>
     (function () {
-      const statusEl = document.getElementById('status');
-      const infoEl = document.getElementById('info');
-      const btn = document.getElementById('btnStart');
+      var debugEl = document.getElementById('debug');
+      function dbg(msg) {
+        try { console.log('[SELFIE]', msg); } catch (e) {}
+        if (debugEl) debugEl.textContent = 'SAMURAI: ' + msg;
+      }
 
-      const cParam = ${JSON.stringify(c)};
+      var cParam = ${JSON.stringify(c)};
       if (!cParam) {
-        statusEl.textContent = "❌ Missing c in URL";
-        statusEl.style.color = "#ff4444";
+        dbg('❌ missing c param');
         return;
       }
 
-      let payload = null;
-
-      function safeLog() {
-        try { console.log.apply(console, arguments); } catch (e) {}
+      var payload = null;
+      try {
+        var json = atob(cParam);
+        payload = JSON.parse(json);
+        dbg('payload decoded');
+      } catch (e) {
+        dbg('❌ invalid c (base64/json)');
+        return;
       }
 
-      function decodePayload() {
+      var userId = payload.userId || payload.UserId || payload.u;
+      var transactionId = payload.transactionId || payload.TransactionId || payload.t;
+
+      if (!userId || !transactionId) {
+        dbg('❌ no userId / transactionId in payload');
+        return;
+      }
+
+      dbg('userId=' + userId + ' | tx=' + transactionId + ' | loading SDK...');
+
+      // حمّل plugin_liveness.php
+      var s = document.createElement('script');
+      s.src = 'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php';
+      s.async = true;
+      s.onload = function () {
+        dbg('SDK loaded, calling OzLiveness.open');
+
+        if (typeof window.OzLiveness !== 'object') {
+          dbg('❌ OzLiveness not found');
+          return;
+        }
+
         try {
-          const json = atob(cParam);
-          payload = JSON.parse(json);
-          safeLog('[SELFIE] payload:', payload);
-
-          var userId = payload.userId || payload.UserId || payload.u;
-          var transactionId = payload.transactionId || payload.TransactionId || payload.t;
-
-          infoEl.innerHTML =
-            "user_id: <code>" + (userId || "?") + "</code><br/>" +
-            "transaction_id: <code>" + (transactionId || "?") + "</code>";
-
-          statusEl.textContent = "Ready. Click Start.";
-        } catch (e) {
-          statusEl.textContent = "❌ Invalid c payload";
-          statusEl.style.color = "#ff4444";
-          safeLog('[SELFIE] decode error', e);
-        }
-      }
-
-      function loadSdk(cb) {
-        var script = document.createElement('script');
-        script.src = ${JSON.stringify(OZ_SDK_URL)};
-        script.async = true;
-        script.onload = function () {
-          safeLog('[SELFIE] SDK loaded');
-          cb();
-        };
-        script.onerror = function (e) {
-          statusEl.textContent = "❌ SDK load error";
-          statusEl.style.color = "#ff4444";
-          safeLog('[SELFIE] SDK error', e);
-        };
-        document.documentElement.appendChild(script);
-      }
-
-      function startLiveness() {
-        if (!payload) {
-          statusEl.textContent = "❌ No payload";
-          return;
-        }
-        var userId = payload.userId || payload.UserId || payload.u;
-        var transactionId = payload.transactionId || payload.TransactionId || payload.t;
-
-        if (!userId || !transactionId) {
-          statusEl.textContent = "❌ Missing user_id / transaction_id";
-          statusEl.style.color = "#ff4444";
-          return;
-        }
-
-        if (typeof window.OzLiveness !== "object") {
-          statusEl.textContent = "❌ OzLiveness not found";
-          statusEl.style.color = "#ff4444";
-          return;
-        }
-
-        statusEl.textContent = "Starting liveness...";
-        statusEl.style.color = "#c8f3ff";
-
-        window.OzLiveness.open({
-          lang: "en",
-          meta: {
-            user_id: userId,
-            transaction_id: transactionId
-          },
-          overlay_options: false,
-          action: ["video_selfie_blank"],
-          events: {
-            on_ready: function () {
-              safeLog("[SELFIE] on_ready");
-            },
-            on_capture: function () {
-              safeLog("[SELFIE] on_capture");
-            },
-            on_complete: function (result) {
-              safeLog("[SELFIE] on_complete", result);
-              statusEl.textContent = "✅ Selfie complete. Server will continue flow.";
-            },
-            on_error: function (err) {
-              safeLog("[SELFIE] on_error", err);
-              statusEl.textContent = "❌ Error: " + (err && err.message || err);
-              statusEl.style.color = "#ff4444";
+          window.OzLiveness.open({
+            lang: 'en',
+            meta: {
+              user_id: userId,
+              transaction_id: transactionId
             }
-          }
-        });
-      }
-
-      btn.addEventListener('click', function () {
-        if (typeof window.OzLiveness === "object") {
-          startLiveness();
-        } else {
-          statusEl.textContent = "Loading SDK...";
-          loadSdk(startLiveness);
+            // ما نزيدو حتى option أخرى باش ما نخرّب والو
+          });
+          dbg('OzLiveness.open called');
+        } catch (e) {
+          dbg('❌ error in OzLiveness.open: ' + (e && e.message || e));
         }
-      });
-
-      decodePayload();
+      };
+      s.onerror = function (e) {
+        dbg('❌ SDK load error');
+      };
+      document.head.appendChild(s);
     })();
   </script>
 </body>
@@ -346,6 +235,7 @@ app.get('/selfie', (req, res) => {
 
   res.send(html);
 });
+
 
 // ==============================
 app.listen(PORT, () => {
